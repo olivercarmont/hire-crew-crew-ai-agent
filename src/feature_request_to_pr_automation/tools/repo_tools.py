@@ -2,7 +2,7 @@ import os
 from typing import List, Optional, Type
 
 from crewai.tools import BaseTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from github import Github, GithubException
 
 
@@ -16,6 +16,8 @@ class RepoReaderInput(BaseModel):
             ".tsx",
             ".js",
             ".jsx",
+            ".css",
+            ".scss",
             ".json",
             ".md",
             ".yaml",
@@ -31,7 +33,7 @@ class RepoReaderInput(BaseModel):
 class RepoReaderTool(BaseTool):
     name: str = "Read repository structure and sample contents"
     description: str = (
-        "Fetch the repository tree and return a concise summary with file list and sample contents."
+        "Fetch the repository tree and return a concise summary with file list and sample contents. Files are listed alphabetically so the agent can choose, with 'app/page.tsx' pinned first if present."
     )
     args_schema: Type[BaseModel] = RepoReaderInput
 
@@ -48,18 +50,28 @@ class RepoReaderTool(BaseTool):
             return f"Failed to read repository {owner_repo}: {e}"
 
         all_paths = [entry.path for entry in tree.tree if entry.type == "blob"]
+
+        # Filter by extension
         filtered_paths = [p for p in all_paths if any(p.endswith(ext) for ext in file_extensions)]
-        filtered_paths = filtered_paths[: max_files]
+
+        # Let the agent decide the next files; only pin likely root page first
+        filtered_paths.sort()  # alphabetical for predictability
+        pinned = []
+        if "app/page.tsx" in filtered_paths:
+            pinned.append("app/page.tsx")
+        # Build final ordered list: pinned first, then the rest excluding pinned
+        ordered_paths = pinned + [p for p in filtered_paths if p not in pinned]
+        ordered_paths = ordered_paths[: max_files]
 
         summary_lines: List[str] = []
         summary_lines.append(f"Repository: {owner_repo}")
         summary_lines.append(f"Default branch: {default_branch}")
-        summary_lines.append("\nFiles (truncated):")
-        for p in filtered_paths:
+        summary_lines.append("\nFiles (alphabetical, pinned first if present):")
+        for p in ordered_paths:
             summary_lines.append(f"- {p}")
 
         summary_lines.append("\nSample contents (truncated):")
-        for p in filtered_paths:
+        for p in ordered_paths:
             try:
                 file = repo.get_contents(p, ref=default_branch)
                 content_bytes = file.decoded_content or b""
@@ -85,6 +97,18 @@ class SurgicalReplacement(BaseModel):
         None,
         description="Max occurrences to replace. None replaces all occurrences.",
     )
+
+    @model_validator(mode="before")
+    def _coerce_alt_keys(cls, data):  # type: ignore[no-untyped-def]
+        # Accept alternate keys from some agents: file_path -> path, find -> find_text, replace -> replace_text
+        if isinstance(data, dict):
+            if "file_path" in data and "path" not in data:
+                data["path"] = data.pop("file_path")
+            if "find" in data and "find_text" not in data:
+                data["find_text"] = data.pop("find")
+            if "replace" in data and "replace_text" not in data:
+                data["replace_text"] = data.pop("replace")
+        return data
 
 
 class CreatePullRequestInput(BaseModel):
@@ -143,9 +167,9 @@ class CreatePullRequestTool(BaseTool):
                 for rep in replacements:
                     # Accept dicts or SurgicalReplacement objects
                     if isinstance(rep, dict):
-                        path = rep.get("path")
-                        find_text = rep.get("find_text")
-                        replace_text = rep.get("replace_text")
+                        path = rep.get("path") or rep.get("file_path")
+                        find_text = rep.get("find_text") or rep.get("find")
+                        replace_text = rep.get("replace_text") or rep.get("replace")
                         count = rep.get("count")
                     else:
                         path = getattr(rep, "path", None)
@@ -154,7 +178,7 @@ class CreatePullRequestTool(BaseTool):
                         count = getattr(rep, "count", None)
 
                     if not path or find_text is None or replace_text is None:
-                        return "Invalid replacement item: require 'path', 'find_text', 'replace_text'"
+                        return "Invalid replacement item: require 'path', 'find_text', 'replace_text' (or aliases 'file_path', 'find', 'replace')"
 
                     # Read existing file from base branch first (or from working branch if exists)
                     try:
