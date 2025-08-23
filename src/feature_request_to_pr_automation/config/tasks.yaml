@@ -1,0 +1,54 @@
+---
+process_feature_request:
+  description: 'Process the incoming API payload containing a feature request. Extract
+    and analyze the feature request details from the provided data: {feature_title},
+    {feature_description}, {user_requirements}, {priority}, and any {additional_context}.
+    Structure this information in a clear format for the development team.'
+  expected_output: 'A structured document containing: feature title ({feature_title}),
+    detailed description ({feature_description}), user requirements ({user_requirements}),
+    priority level ({priority}), technical requirements, and suggested implementation
+    approach based on the provided context ({additional_context}).'
+  agent: feature_request_processor
+analyze_repository_structure:
+  description: Search the specified GitHub repository {github_repo_url} to understand
+    its structure and identify where the requested feature should be implemented.
+    Find relevant existing code, similar features, patterns, and determine the best
+    files/directories for implementation. Analyze the codebase architecture and existing
+    patterns.
+  expected_output: 'A detailed analysis report containing: repository structure overview,
+    identified implementation locations, relevant existing code patterns, architectural
+    considerations, list of files that need to be modified or created, and integration
+    points with existing features.'
+  agent: github_repository_analyst
+  context:
+  - process_feature_request
+implement_feature_code:
+  description: >-
+    Based on the feature requirements and repository analysis, specify the exact
+    minimal edits needed. Prefer surgical text replacements over rewriting files.
+    Identify the file paths and the exact find/replace pairs (with counts) required
+    to achieve the change with the smallest possible diff.
+  expected_output: >-
+    A concise list of surgical replacements including: file path, the exact text to
+    find, the replacement text, and the number of occurrences to change. Avoid
+    providing full file contents unless absolutely necessary.
+  agent: code_implementation_specialist
+  context:
+  - process_feature_request
+  - analyze_repository_structure
+create_and_submit_pull_request:
+  description: >-
+    Create a new pull request on the GitHub repository {github_repo_url} using
+    minimal diffs. Use the PR tool's surgical replacement mode (replacements array)
+    to apply only the necessary text changes. Do not rewrite entire files. Include
+    a clear PR description and choose a unique branch name (e.g., with a short
+    timestamp suffix) to avoid collisions.
+  expected_output: >-
+    A pull request created using surgical replacements with only the intended lines
+    changed, including PR URL. PR description should cover feature overview,
+    implementation details, and testing steps. The diff must be minimal.
+  agent: github_pull_request_manager
+  context:
+  - process_feature_request
+  - analyze_repository_structure
+  - implement_feature_code
